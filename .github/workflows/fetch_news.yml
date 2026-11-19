@@ -1,0 +1,65 @@
+# 功能：GitHub Actions 定時自動抓取酒駕新聞去重，絕不自動改動網站或推送分支，改為自動建立 GitHub Issue 寄信提醒人工審閱
+# 產生日期與時間：2026-11-18 14:00
+
+name: Fetch News & Notify for Review
+
+on:
+  schedule:
+    # 每週一台灣時間早上 08:30 (UTC 00:30) 定時自動執行
+    - cron: '30 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '搜尋起始日期 (YYYY-MM-DD)'
+        required: true
+        default: '2026-11-01'
+      end_date:
+        description: '搜尋結束日期 (YYYY-MM-DD)'
+        required: true
+        default: '2026-11-18'
+
+permissions:
+  contents: read
+  issues: write # 僅開啟建立審閱通知 Issue 的權限，不自動寫入或修改 Repo 程式碼與 CSV
+
+jobs:
+  fetch-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 檢出專案原始碼 (用於比對既有 incidents.csv)
+        uses: actions/checkout@v4
+
+      - name: 2. 設定 Python 3.11 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. 執行酒駕新聞抓取與同事件去重（單一報導不跨篇互補）
+        run: |
+          if [ -n "${{ github.event.inputs.start_date }}" ]; then
+            python3 scripts/fetch_news_dedup.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}"
+          else
+            python3 scripts/fetch_news_dedup.py
+          fi
+
+      - name: 4. 打包待審閱 CSV 供下載 (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-candidates-csv
+          path: news_candidates.csv
+          retention-days: 30
+
+      - name: 5. 自動建立 GitHub Issue 並觸發 Email 提醒人工審閱
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('review_summary.md')) return;
+            const body = fs.readFileSync('review_summary.md', 'utf8');
+            const today = new Date().toISOString().slice(0, 10);
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔔 [待審閱] 酒駕新聞自動彙整清單 (${today})`,
+              body: body
+            });

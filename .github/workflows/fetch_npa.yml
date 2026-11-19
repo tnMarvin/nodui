@@ -7,7 +7,7 @@ on:
   schedule:
     # 每週一台灣時間早上 08:00 (UTC 00:00) 自動執行
     - cron: '0 0 * * 1'
-  workflow_dispatch: # 支援在 GitHub Actions 網頁手動點擊測試
+  workflow_dispatch: # 支援在 GitHub Actions 網頁手動點擊觸發
 
 permissions:
   contents: write
@@ -33,4 +33,3 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add official_stats.csv npa_candidates.csv || true
           git diff --staged --quiet || (git commit -m "chore(data): 自動更新警政署統計與待查證車禍線索" && git push)
-```[cite: 5]
