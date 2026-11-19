@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  功能：台灣酒駕新聞地圖單頁應用 (含 22 縣市互動地圖、同編號新聞合併、警政署官方統計對照區塊、深色模式與投稿對話框)
+  功能：台灣酒駕新聞地圖單頁應用（22 縣市互動地圖、官方每月統計排行與年／月查詢、新聞列表、深色模式、投稿對話框；純渲染，資料全部來自外部 CSV）
   產生日期與時間：2026-11-18 11:54
 -->
 <html lang="zh-Hant">
@@ -63,7 +63,21 @@ label{display:block;font-size:14px;margin:10px 0 4px;font-weight:700}
 input,select,textarea{width:100%;font:inherit;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .hp{position:absolute;left:-9999px}
 .row{display:flex;gap:10px}.row>*{flex:1}
-#toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:#166534;color:#fff;padding:12px 18px;border-radius:12px;display:none;z-index:30;max-width:90%;font-size:14px}</style>
+#toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:#166534;color:#fff;padding:12px 18px;border-radius:12px;display:none;z-index:30;max-width:90%;font-size:14px}.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 8px}
+select.small{width:auto;padding:5px 10px;border-radius:999px;font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.chip{border:1px solid var(--line);background:none;color:var(--ink);border-radius:999px;padding:3px 11px;font:inherit;font-size:13px;cursor:pointer}
+.chip:hover{border-color:var(--acc)}.chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:10px 0}
+.stat{background:var(--chip);border-radius:12px;padding:8px 12px}.stat b{display:block;font-size:22px;line-height:1.3}.stat span{font-size:12px;color:var(--mute)}
+.rank button.rk{display:grid;justify-content:stretch;grid-template-columns:28px 1fr auto;gap:3px 10px;align-items:center;width:100%;text-align:left;padding:8px 12px;border:1px solid var(--line);background:none;color:var(--ink);border-radius:10px;font:inherit;cursor:pointer}
+.rank button.rk:hover{border-color:var(--acc)}.rk .n{color:var(--mute);font-size:13px;text-align:center}.rk .nm{font-weight:700}.rk .v{font-weight:700;color:var(--acc)}
+.rk .bar2{grid-column:2/4;height:6px;border-radius:3px;background:var(--chip);overflow:hidden}.rk .bar2 i{display:block;height:100%;background:var(--acc);opacity:.75}
+.rk .sub{grid-column:2/4;font-size:12px;color:var(--mute)}
+.sec{margin:16px 0 4px;font-size:15px;font-weight:700}
+details.meta{margin-top:16px;font-size:13px;color:var(--mute)}details.meta summary{cursor:pointer}
+.chart{width:100%;height:auto;display:block;margin:4px 0}.chart text{fill:var(--mute);font-size:11px}.chart rect{cursor:pointer}
+.note{font-size:12px;color:var(--mute);margin:4px 0 0;font-weight:400}</style>
 </head>
 <body>
 <header>
@@ -123,79 +137,106 @@ input,select,textarea{width:100%;font:inherit;padding:9px 10px;border-radius:10p
 
 <script>
 /*
- * 功能：台灣酒駕新聞地圖前端渲染引擎（純渲染架構：完全不內嵌任何新聞或統計數據，100% 讀取外部 CSV 呈現）
- * 產生日期與時間：2026-11-18 11:54
+ * 台灣酒駕新聞地圖：純渲染前端。
+ * 本檔案不內嵌任何新聞或統計數字，全部從下列 CSV 讀取後呈現。
  */
-// ===== 資料來源設定：網站僅負責讀取外部 CSV 並渲染畫面 =====
-const SHEET_URL = 'incidents.csv';      // 新聞事件資料檔
-const STAT_URL  = 'official_stats.csv'; // 警政署／道安司官方統計資料檔
-const FORM_URL  = '';                   // 投稿 Google 表單網址（留空則使用內建對話框）
-// =========================================================
+// ===== 資料來源設定（檔案和 index.html 放在同一個資料夾）=====
+const SHEET_URL   = 'incidents.csv';          // 本站整理的新聞事件
+const ACC_URL     = 'official_monthly.csv';   // 官方每月事故／死亡／受傷（build_official.py 產生）
+const POP_URL     = 'population_monthly.csv'; // 每月人口數（build_official.py 產生）
+const META_URL    = 'official_meta.csv';      // 統計說明、來源、更新時間
+const PENDING_URL = 'pending.csv';            // 選填：待審核件數，檔案只放一個數字
+const FORM_URL    = '';                       // 投稿 Google 表單網址（留空則使用內建對話框）
+const DEFAULT_SORT = 'ra';                    // 首頁預設排序：ra, rd, ri, d, a, i
+// =============================================================
 
-let INC = [];       // 新聞事件陣列（由 incidents.csv 載入）
-let NPA_STAT = {};  // 官方統計物件（由 official_stats.csv 載入）
-let PEND = null;
+const SORTS = [
+  ['ra', '每10萬人事故率（年均）'], ['rd', '每10萬人死亡率（年均）'], ['ri', '每10萬人受傷率（年均）'],
+  ['d', '累計死亡人數'], ['a', '累計事故件數'], ['i', '累計受傷人數']
+];
+const EXTRA_KEYS = {'國道': 'Highway', '其他': 'Other'};
+const EXTRA_NAMES = {Highway: '國道', Other: '其他'};
+const TY = {text: '閱讀文字新聞', video: '觀看新聞影片', official: '官方資料'};
 
-const TY = {text:'閱讀文字新聞', video:'觀看新聞影片', official:'官方資料'};
+let INC = [], ACC = {}, POP = {}, META = {}, PEND = null;
+let sortKey = DEFAULT_SORT, sel = {y: null, m: null}, cur = null;
+
 const $ = s => document.querySelector(s);
 const svg = $('.mapwrap svg');
 const names = {};
-
 svg.querySelectorAll('.county-area').forEach(p => {
   const k = p.dataset.k || p.id || p.dataset.name;
   p.dataset.k = k;
   if (!names[k]) names[k] = p.dataset.name;
 });
+const zk = {};
+Object.entries(names).forEach(([k, v]) => zk[v] = k);
 
-const by = k => INC.filter(i => i.c === k || names[i.c] === k);
-const tot = l => ({n:l.length, d:l.reduce((a,b)=>a+b.dead,0), j:l.reduce((a,b)=>a+b.inj,0)});
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const fmtN = n => (+n || 0).toLocaleString();
+const fmtR = r => r == null ? '—' : r.toFixed(1);
+const ym = (y, m) => y + '年' + m + '月';
 
-const totNpa = () => {
-  if (NPA_STAT.Total) return NPA_STAT.Total;
-  const vals = Object.entries(NPA_STAT)
-    .filter(([k]) => k !== 'Total' && k !== 'Highway' && k !== 'Other')
-    .map(([,v]) => v);
-  if (!vals.length) return null;
-  return {
-    period: vals[0].period || '',
-    updated: vals[0].updated || '',
-    src: vals[0].src || '',
-    cases: vals.reduce((a,b)=>a+(+b.cases||0), 0),
-    dead: vals.reduce((a,b)=>a+(+b.dead||0), 0),
-    inj: vals.reduce((a,b)=>a+(+b.inj||0), 0),
-    prevPeriod: vals[0].prevPeriod || '',
-    prevCases: vals[0].prevCases != null ? vals.reduce((a,b)=>a+(+b.prevCases||0), 0) : null,
-    prevDead: vals[0].prevDead != null ? vals.reduce((a,b)=>a+(+b.prevDead||0), 0) : null,
-    prevInj: vals[0].prevInj != null ? vals.reduce((a,b)=>a+(+b.prevInj||0), 0) : null
-  };
-};
+// ---------- 官方統計的彙總 ----------
+const popOf = (k, r) => (POP[k] || {})[r.y * 100 + r.m];
+function agg(k, y, m) {
+  const rs = (ACC[k] || []).filter(r => (y == null || r.y === y) && (m == null || r.m === m));
+  const o = {a: 0, d: 0, i: 0, n: rs.length, py: 0, pop1: null, first: rs[0], last: rs[rs.length - 1]};
+  rs.forEach(r => {
+    o.a += r.a; o.d += r.d; o.i += r.i;
+    const p = popOf(k, r);
+    if (p) o.py += p / 12;               // 人口 × (1/12 年) = 人年
+    if (rs.length === 1) o.pop1 = p;
+  });
+  return o;
+}
+// 每10萬人比率：單月用「當月人口」，其他用「人年」（年均）
+function rate(x, ag, monthly) {
+  if (monthly) return ag.pop1 ? x / ag.pop1 * 1e5 : null;
+  return ag.py ? x / ag.py * 1e5 : null;
+}
+function metricOf(key, ag) {
+  return {a: ag.a, d: ag.d, i: ag.i, ra: rate(ag.a, ag), rd: rate(ag.d, ag), ri: rate(ag.i, ag)}[key];
+}
+const sortLabel = () => SORTS.find(s => s[0] === sortKey)[1];
+const isRate = k => k[0] === 'r';
+const fmtMetric = (key, v) => v == null ? '—' : isRate(key) ? v.toFixed(1) : fmtN(v);
+function periodLabel() {
+  const all = Object.keys(ACC).filter(k => !EXTRA_NAMES[k]).flatMap(k => ACC[k]);
+  if (!all.length) return '';
+  const f = all.reduce((a, b) => (a.y * 100 + a.m <= b.y * 100 + b.m) ? a : b);
+  const l = all.reduce((a, b) => (a.y * 100 + a.m >= b.y * 100 + b.m) ? a : b);
+  return ym(f.y, f.m) + '～' + ym(l.y, l.m);
+}
 
-const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// ---------- 新聞（incidents.csv）----------
+const byNews = k => INC.filter(i => i.c === k);
+function newsIn(k, y, m) {
+  return byNews(k).filter(i => {
+    if (!i.date) return y == null && m == null;
+    const iy = +i.date.slice(0, 4) - 1911, im = +i.date.slice(5, 7);
+    return (y == null || iy === y) && (m == null || im === m);
+  });
+}
+
+// ---------- 地圖效果 ----------
 const ns = 'http://www.w3.org/2000/svg';
 const fx = document.createElementNS(ns, 'g');
 fx.setAttribute('pointer-events', 'none');
 svg.insertBefore(fx, svg.querySelector('#labels').nextSibling);
-
 function outline(k, cls, color, w) {
-  svg.querySelectorAll('.county-area[data-k="'+k+'"]').forEach(p => {
+  svg.querySelectorAll('.county-area[data-k="' + k + '"]').forEach(p => {
     const c = p.cloneNode(false);
-    c.removeAttribute('id');
-    c.removeAttribute('class');
+    c.removeAttribute('id'); c.removeAttribute('class');
     c.setAttribute('fill', color);
     c.setAttribute('fill-opacity', cls === 'h' ? .18 : 0);
-    c.setAttribute('stroke', color);
-    c.setAttribute('stroke-width', w);
-    c.setAttribute('stroke-linejoin', 'round');
+    c.setAttribute('stroke', color); c.setAttribute('stroke-width', w); c.setAttribute('stroke-linejoin', 'round');
     c.dataset.o = cls;
     fx.appendChild(c);
   });
 }
+const clr = cls => fx.querySelectorAll('[data-o="' + cls + '"]').forEach(e => e.remove());
 
-function clr(cls) {
-  fx.querySelectorAll('[data-o="'+cls+'"]').forEach(e => e.remove());
-}
-
-// 縣市收錄件數橘色圓形徽章（依 incidents.csv 動態繪製）
 const lab = [...svg.querySelectorAll('#labels text, #offshore text')];
 function badges() {
   svg.querySelectorAll('.bdg').forEach(e => e.remove());
@@ -204,32 +245,17 @@ function badges() {
     const k = p.dataset.k;
     if (drawn.has(k) || p.dataset.island) return;
     drawn.add(k);
-    const n = by(k).length;
+    const n = byNews(k).length;
     if (!n) return;
     const b = p.getBBox();
     let cx = b.x + b.width / 2, cy = b.y + b.height / 2;
     const t = lab.find(t => t.textContent.startsWith(p.dataset.name));
     if (t) { cx = +t.getAttribute('x'); cy = +t.getAttribute('y') - 34; }
     const g = document.createElementNS(ns, 'g');
-    g.setAttribute('class', 'bdg');
-    g.setAttribute('pointer-events', 'none');
-    g.innerHTML = '<circle cx="'+cx+'" cy="'+cy+'" r="17" fill="#C2410C" stroke="#fff" stroke-width="3"/><text x="'+cx+'" y="'+(cy+6)+'" font-size="18" text-anchor="middle" fill="#fff" font-weight="700">'+n+'</text>';
+    g.setAttribute('class', 'bdg'); g.setAttribute('pointer-events', 'none');
+    g.innerHTML = '<circle cx="' + cx + '" cy="' + cy + '" r="17" fill="#C2410C" stroke="#fff" stroke-width="3"/><text x="' + cx + '" y="' + (cy + 6) + '" font-size="18" text-anchor="middle" fill="#fff" font-weight="700">' + n + '</text>';
     svg.appendChild(g);
   });
-}
-
-// 渲染「警政署／道安司官方統計」區塊（僅在 official_stats.csv 有載入資料時渲染）
-function renderNpaBox(stat, scopeLabel) {
-  if (!stat) return '';
-  return '<div class="npa-box" role="region" aria-label="警政署統計資料">'
-    + '<div class="npa-head"><span>📊 警政署／道安司官方統計（' + esc(stat.period) + '・' + esc(scopeLabel) + '）</span>'
-    + '<span class="npa-note">30日內死傷統計' + (stat.updated ? '（更新：' + esc(stat.updated) + '）' : '') + '，與本站收錄新聞分開計算</span></div>'
-    + '<div class="npa-chips">'
-    + '<span>酒駕事故 ' + stat.cases.toLocaleString() + ' 件</span>'
-    + '<span>死亡 ' + stat.dead.toLocaleString() + ' 人</span>'
-    + '<span>受傷 ' + stat.inj.toLocaleString() + ' 人</span>'
-    + (stat.prevCases != null ? '<span style="opacity:.85">' + esc(stat.prevPeriod || '前一年度') + '：' + stat.prevCases.toLocaleString() + ' 件（' + stat.prevDead + '死 ' + stat.prevInj.toLocaleString() + '傷）</span>' : '')
-    + '</div></div>';
 }
 
 const tip = $('#tip');
@@ -237,37 +263,29 @@ svg.addEventListener('mousemove', e => {
   const p = e.target.closest('.county-area');
   clr('h');
   if (!p) { tip.style.display = 'none'; return; }
-  const k = p.dataset.k;
-  const T = tot(by(k)), S = NPA_STAT[k];
+  const k = p.dataset.k, ag = agg(k), nn = byNews(k).length;
   outline(k, 'h', '#FB923C', 4);
   const title = p.dataset.island ? p.dataset.name + '（' + p.dataset.island + '）' : p.dataset.name;
-  tip.innerHTML = '<b>' + esc(title) + '</b><br>'
-    + (T.n ? '新聞收錄 ' + T.n + ' 件・死亡 ' + T.d + ' 人・受傷 ' + T.j + ' 人' : '目前尚無收錄新聞')
-    + (S ? '<br><span style="color:#93C5FD;font-size:12px">警政署統計（' + esc(S.period) + '）：事故 ' + S.cases + ' 件（' + S.dead + '死 ' + S.inj + '傷）</span>' : '')
-    + '<br><span style="opacity:.7">點選查看</span>';
+  tip.innerHTML = '<b>' + esc(title) + '</b>'
+    + (ag.n ? '<br><span style="color:#93C5FD;font-size:12px">官方累計：事故 ' + fmtN(ag.a) + '・死亡 ' + fmtN(ag.d) + '・受傷 ' + fmtN(ag.i)
+      + '<br>' + esc(sortLabel()) + '：' + fmtMetric(sortKey, metricOf(sortKey, ag)) + '</span>' : '')
+    + '<br>本站新聞 ' + nn + ' 件<br><span style="opacity:.7">點選查看</span>';
   tip.style.display = 'block';
-  tip.style.left = Math.min(e.clientX + 14, innerWidth - 260) + 'px';
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 270) + 'px';
   tip.style.top = (e.clientY + 14) + 'px';
 });
 svg.addEventListener('mouseleave', () => { clr('h'); tip.style.display = 'none'; });
 svg.addEventListener('click', e => {
   const p = e.target.closest('.county-area');
-  if (p) pick(p.dataset.k, true);
+  if (p) showCounty(p.dataset.k, true);
 });
 
-let cur = null;
-function pick(k, scroll) {
-  cur = k;
-  clr('s');
-  outline(k, 's', '#C2410C', 6);
-  const l = by(k).sort((a,b) => b.date.localeCompare(a.date)), T = tot(l), S = NPA_STAT[k];
-  let h = '<h2>' + esc(names[k]) + '｜酒駕事件紀錄</h2>'
-    + '<div class="sum"><span>收錄 ' + T.n + ' 件</span><span>死亡 ' + T.d + ' 人</span><span>受傷 ' + T.j + ' 人</span></div>'
-    + renderNpaBox(S, names[k]);
-  h += l.length ? l.map(card).join('') : '<div class="empty">目前尚無收錄資料。如果你知道相關新聞，歡迎提供連結。</div>';
-  h += '<div class="bar"><button class="btn" data-sub="' + k + '">提供新聞連結</button><button class="btn ghost" id="back">回到全台總覽</button></div>';
-  $('#panel').innerHTML = h;
-  if (scroll && innerWidth <= 820) $('#panel').scrollIntoView({behavior:'smooth', block:'start'});
+// ---------- 畫面元件 ----------
+function metaHtml() {
+  if (!Object.keys(META).length) return '';
+  const rows = ['統計期間', '人口資料期間', '最近更新', '資料來源', '人口資料來源', '資料備註', '統計說明']
+    .filter(k => META[k]).map(k => '<p style="margin:6px 0"><b>' + esc(k) + '：</b>' + esc(META[k]) + '</p>').join('');
+  return '<details class="meta"><summary>官方統計說明與資料來源</summary>' + rows + '</details>';
 }
 
 function card(i) {
@@ -275,54 +293,145 @@ function card(i) {
   return '<article class="card">'
     + '<div class="meta"><span>' + ds + '</span>' + (i.road ? '<span>' + esc(i.road) + '</span>' : '')
     + (i.result ? '<span class="badge ' + (i.result.includes('死') ? 'dead' : '') + '">結果：' + esc(i.result) + '</span>' : '') + '</div>'
-    + (i.t ? '<h3>' + esc(i.t) + '</h3>' : '')
     + (i.victim ? '<p><b>被酒駕者：</b>' + esc(i.victim) + '</p>' : '')
     + (i.driver ? '<p><b>酒駕者：</b>' + esc(i.driver) + '</p>' : '')
     + '<div class="meta" style="margin-bottom:8px"><span>死亡 ' + i.dead + '・受傷 ' + i.inj + '</span></div>'
     + '<div class="src">' + i.src.map(x => '<a href="' + esc(x[2]) + '" target="_blank" rel="noopener noreferrer">' + TY[x[0]] + (x[1] ? '（' + esc(x[1]) + '）' : '') + '</a>').join('') + '</div></article>';
 }
 
-function home() {
-  cur = null;
-  clr('s');
-  const T = tot(INC), SAll = totNpa();
-  const allKeys = Object.keys(names);
-  const ks = allKeys.map(c => [c, by(c).length]).filter(([c,n]) => n > 0).sort((a,b) => b[1] - a[1]);
-  $('#panel').innerHTML = '<h2>全台總覽</h2>'
-    + '<div class="sum"><span>收錄 ' + T.n + ' 件</span><span>死亡 ' + T.d + ' 人</span><span>受傷 ' + T.j + ' 人</span>' + (PEND != null ? '<span>待審核 ' + PEND + ' 件</span>' : '') + '</div>'
-    + renderNpaBox(SAll, '全台總計')
-    + '<p style="color:var(--mute);margin:0">點選地圖上的縣市，或從下方清單進入。地圖上的橘色數字代表該縣市收錄的新聞事件件數。</p>'
-    + (ks.length ? '<div class="rank">' + ks.map(([c,n]) => {
-        const s = NPA_STAT[c];
-        return '<button data-go="' + c + '"><span>' + esc(names[c]) + '</span>'
-          + (s ? '<span class="rank-sub">官方統計 ' + s.cases + ' 件</span>' : '')
-          + '<span><b>' + n + ' 件</b></span></button>';
-      }).join('') + '</div>' : '<div class="empty">目前尚無收錄新聞事件資料。</div>')
-    + '<div class="bar"><button class="btn" data-sub="">提供新聞連結</button></div>';
+function chart(k) {
+  const rs = ACC[k] || [];
+  let items;
+  if (sel.y == null) {
+    items = [...new Set(rs.map(r => r.y))].map(y => {
+      const g = rs.filter(r => r.y === y);
+      return {lab: String(y), y, m: null, d: g.reduce((s, r) => s + r.d, 0), a: g.reduce((s, r) => s + r.a, 0), i: g.reduce((s, r) => s + r.i, 0), part: g.length < 12};
+    });
+  } else {
+    items = rs.filter(r => r.y === sel.y).map(r => ({lab: String(r.m), y: r.y, m: r.m, d: r.d, a: r.a, i: r.i}));
+  }
+  if (!items.length) return '';
+  const W = 560, H = 160, pt = 20, pb = 22, n = items.length, bw = (W - 20) / n;
+  const max = Math.max(1, ...items.map(x => x.d));
+  const bars = items.map((x, j) => {
+    const h = (H - pt - pb) * x.d / max, bx = 10 + j * bw + bw * .15, by = H - pb - h;
+    const on = sel.y === x.y && sel.m === x.m;
+    return '<rect data-y="' + x.y + '" data-m="' + (x.m == null ? '' : x.m) + '" x="' + bx + '" y="' + by + '" width="' + bw * .7 + '" height="' + Math.max(h, 1) + '" rx="3" style="fill:var(--acc);opacity:' + (on ? 1 : .55) + '"><title>'
+      + (x.m == null ? x.y + '年' : ym(x.y, x.m)) + '：事故 ' + x.a + '、死亡 ' + x.d + '、受傷 ' + x.i + (x.part ? '（資料未滿 12 個月）' : '') + '</title></rect>'
+      + '<text x="' + (bx + bw * .35) + '" y="' + (by - 4) + '" text-anchor="middle">' + x.d + '</text>'
+      + '<text x="' + (bx + bw * .35) + '" y="' + (H - 6) + '" text-anchor="middle">' + x.lab + '</text>';
+  }).join('');
+  return '<div class="sec">' + (sel.y == null ? '各年死亡人數' : sel.y + '年各月死亡人數') + '<span class="note">（點長條可切換）</span></div>'
+    + '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="死亡人數長條圖">' + bars + '</svg>';
 }
 
+function showCounty(k, scroll) {
+  cur = k; clr('s'); outline(k, 's', '#C2410C', 6);
+  const rs = ACC[k] || [];
+  const years = [...new Set(rs.map(r => r.y))];
+  if (sel.y != null && !years.includes(sel.y)) sel = {y: null, m: null};
+  const months = sel.y == null ? [] : rs.filter(r => r.y === sel.y).map(r => r.m);
+  if (sel.m != null && !months.includes(sel.m)) sel.m = null;
+  const ag = agg(k, sel.y, sel.m), monthly = sel.m != null;
+  const label = sel.y == null ? '累計 ' + periodLabel() : sel.m != null ? ym(sel.y, sel.m) : sel.y + '年' + (months.length < 12 ? '（至' + months[months.length - 1] + '月）' : '全年');
+  const unit = monthly ? '當月' : '年均';
+
+  let h = '<h2>' + esc(names[k]) + '｜酒駕統計與新聞</h2>';
+  if (rs.length) {
+    h += '<div class="sec" style="margin-top:12px">選擇期間</div><div class="chips">'
+      + '<button class="chip' + (sel.y == null ? ' on' : '') + '" data-y="">累計</button>'
+      + years.map(y => '<button class="chip' + (sel.y === y ? ' on' : '') + '" data-y="' + y + '">' + y + '年</button>').join('') + '</div>';
+    if (sel.y != null) {
+      h += '<div class="chips"><button class="chip' + (sel.m == null ? ' on' : '') + '" data-y="' + sel.y + '" data-m="">全年</button>'
+        + months.map(m => '<button class="chip' + (sel.m === m ? ' on' : '') + '" data-y="' + sel.y + '" data-m="' + m + '">' + m + '月</button>').join('') + '</div>';
+    }
+    h += '<div class="sec">官方統計（' + esc(label) + '）</div><div class="stats">'
+      + '<div class="stat"><b>' + fmtN(ag.a) + '</b><span>事故件數</span></div>'
+      + '<div class="stat"><b>' + fmtN(ag.d) + '</b><span>死亡人數</span></div>'
+      + '<div class="stat"><b>' + fmtN(ag.i) + '</b><span>受傷人數</span></div>'
+      + '<div class="stat"><b>' + fmtR(rate(ag.a, ag, monthly)) + '</b><span>每10萬人事故（' + unit + '）</span></div>'
+      + '<div class="stat"><b>' + fmtR(rate(ag.d, ag, monthly)) + '</b><span>每10萬人死亡（' + unit + '）</span></div></div>'
+      + chart(k);
+  } else {
+    h += '<div class="empty">目前沒有載入官方統計資料。</div>';
+  }
+  const ns_ = newsIn(k, sel.y, sel.m);
+  h += '<div class="sec">本站收錄新聞（' + ns_.length + ' 件）</div><div class="note">本站新聞是人工整理，與官方統計是兩套資料，件數不會相等，也不能互相加總。</div>';
+  h += ns_.length ? ns_.sort((a, b) => b.date.localeCompare(a.date)).map(card).join('')
+    : '<div class="empty">這段期間本站尚無收錄新聞。如果你知道相關新聞，歡迎提供連結。</div>';
+  h += metaHtml();
+  h += '<div class="bar"><button class="btn" data-sub="' + k + '">提供新聞連結</button><button class="btn ghost" id="back">回到全台排行</button></div>';
+  $('#panel').innerHTML = h;
+  if (scroll && innerWidth <= 820) $('#panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function home() {
+  cur = null; clr('s');
+  const ks = Object.keys(names).filter(k => ACC[k]);
+  let h = '<h2>全台總覽</h2>';
+  if (ks.length) {
+    const tot = Object.keys(ACC).reduce((s, k) => { const g = agg(k); s.a += g.a; s.d += g.d; s.i += g.i; return s; }, {a: 0, d: 0, i: 0});
+    h += '<div class="sec" style="margin-top:8px">官方統計（' + esc(periodLabel()) + '，含國道與其他）</div><div class="stats">'
+      + '<div class="stat"><b>' + fmtN(tot.a) + '</b><span>事故件數</span></div>'
+      + '<div class="stat"><b>' + fmtN(tot.d) + '</b><span>死亡人數</span></div>'
+      + '<div class="stat"><b>' + fmtN(tot.i) + '</b><span>受傷人數</span></div></div>';
+    const list = ks.map(k => ({k, ag: agg(k)})).map(o => Object.assign(o, {v: metricOf(sortKey, o.ag)}))
+      .sort((a, b) => (b.v == null ? -1 : b.v) - (a.v == null ? -1 : a.v));
+    const max = Math.max(1e-9, ...list.map(o => o.v || 0));
+    h += '<div class="ctrl"><b>縣市排行</b><select class="small" id="sortSel" aria-label="排序依據">'
+      + SORTS.map(s => '<option value="' + s[0] + '"' + (s[0] === sortKey ? ' selected' : '') + '>' + s[1] + '</option>').join('') + '</select></div>';
+    h += '<div class="rank">' + list.map((o, j) => {
+      const nn = byNews(o.k).length;
+      return '<button class="rk" data-go="' + o.k + '"><span class="n">' + (j + 1) + '</span><span class="nm">' + esc(names[o.k]) + '</span>'
+        + '<span class="v">' + fmtMetric(sortKey, o.v) + '</span>'
+        + '<span class="bar2"><i style="width:' + Math.round((o.v || 0) / max * 100) + '%"></i></span>'
+        + '<span class="sub">事故 ' + fmtN(o.ag.a) + '・死亡 ' + fmtN(o.ag.d) + '・受傷 ' + fmtN(o.ag.i) + '・本站新聞 ' + nn + ' 件</span></button>';
+    }).join('') + '</div>';
+    const ex = Object.keys(EXTRA_NAMES).filter(k => ACC[k]).map(k => {
+      const g = agg(k);
+      return '<span>' + EXTRA_NAMES[k] + '：事故 ' + fmtN(g.a) + '・死亡 ' + fmtN(g.d) + '・受傷 ' + fmtN(g.i) + '</span>';
+    }).join('');
+    if (ex) h += '<div class="note" style="margin-top:8px">不列入縣市排名　' + ex + '</div>';
+    h += '<div class="note">比率用「每10萬人（年均）」計算，人口取每月人口；人口少的縣市（例如連江、金門、澎湖）一兩件就會讓比率大幅變動。</div>';
+  } else {
+    h += '<div class="empty">目前沒有載入官方統計資料。</div>';
+  }
+  h += '<div class="sum" style="margin-top:12px"><span>本站收錄新聞 ' + INC.length + ' 件</span>' + (PEND != null ? '<span>待審核 ' + PEND + ' 件</span>' : '') + '</div>';
+  h += '<p style="color:var(--mute);margin:0;font-size:13px">點選地圖上的縣市，或從排行進入。地圖上的橘色數字代表該縣市本站收錄的新聞件數。</p>';
+  h += metaHtml();
+  h += '<div class="bar"><button class="btn" data-sub="">提供新聞連結</button></div>';
+  $('#panel').innerHTML = h;
+}
+
+$('#panel').addEventListener('change', e => {
+  if (e.target.id === 'sortSel') { sortKey = e.target.value; home(); }
+});
 $('#panel').addEventListener('click', e => {
   const g = e.target.closest('[data-go]');
-  if (g) return pick(g.dataset.go, true);
+  if (g) return showCounty(g.dataset.go, true);
   if (e.target.id === 'back') return home();
   const s = e.target.closest('[data-sub]');
-  if (s) openForm(s.dataset.sub);
+  if (s) return openForm(s.dataset.sub);
+  const c = e.target.closest('[data-y]');
+  if (c && cur) {
+    sel = {y: c.dataset.y === '' ? null : +c.dataset.y, m: c.dataset.m == null || c.dataset.m === '' ? null : +c.dataset.m};
+    showCounty(cur, false);
+  }
 });
 
-// 深淺色模式切換
+// ---------- 深淺色模式 ----------
 const tbtn = $('#themeBtn');
 function syncThemeBtn() {
-  const curTheme = document.documentElement.getAttribute('data-theme');
-  const isDark = curTheme === 'dark' || (!curTheme && window.matchMedia('(prefers-color-scheme:dark)').matches);
+  const t = document.documentElement.getAttribute('data-theme');
+  const isDark = t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme:dark)').matches);
   if (tbtn) tbtn.textContent = isDark ? '☀️ 淺色模式' : '🌙 深色模式';
 }
 if (tbtn) {
-  const savedTheme = localStorage.getItem('theme');
-  if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+  try { const st = localStorage.getItem('theme'); if (st) document.documentElement.setAttribute('data-theme', st); } catch (_) {}
   syncThemeBtn();
   tbtn.addEventListener('click', () => {
-    const curTheme = document.documentElement.getAttribute('data-theme');
-    const isDark = curTheme === 'dark' || (!curTheme && window.matchMedia('(prefers-color-scheme:dark)').matches);
+    const t = document.documentElement.getAttribute('data-theme');
+    const isDark = t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme:dark)').matches);
     const next = isDark ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('theme', next); } catch (_) {}
@@ -330,8 +439,9 @@ if (tbtn) {
   });
 }
 
+// ---------- 投稿表單 ----------
 const fc = $('#fc');
-fc.innerHTML = '<option value="">請選擇縣市</option>' + Object.entries(names).map(([k,v]) => '<option value="' + k + '">' + v + '</option>').join('');
+fc.innerHTML = '<option value="">請選擇縣市</option>' + Object.entries(names).map(([k, v]) => '<option value="' + k + '">' + v + '</option>').join('');
 const dlg = $('#dlg');
 function openForm(k) {
   if (FORM_URL) { window.open(FORM_URL, '_blank', 'noopener'); return; }
@@ -341,8 +451,7 @@ function openForm(k) {
 $('#cx').onclick = () => dlg.close();
 function toast(m) {
   const t = $('#toast');
-  t.textContent = m;
-  t.style.display = 'block';
+  t.textContent = m; t.style.display = 'block';
   setTimeout(() => t.style.display = 'none', 4200);
 }
 $('#f').addEventListener('submit', e => {
@@ -350,24 +459,24 @@ $('#f').addEventListener('submit', e => {
   if ($('#fh').value) return dlg.close();
   const u = $('#fu').value.trim();
   if (!/^https?:\/\//i.test(u)) return toast('請輸入以 http 或 https 開頭的網址');
-  const rec = {county:fc.value, date:$('#fd').value, type:$('#ft').value, url:u, note:$('#fn').value.slice(0,300), at:new Date().toISOString(), status:'pending'};
+  const rec = {county: fc.value, date: $('#fd').value, type: $('#ft').value, url: u, note: $('#fn').value.slice(0, 300), at: new Date().toISOString(), status: 'pending'};
   try {
     const a = JSON.parse(localStorage.getItem('pending') || '[]');
     a.push(rec);
     localStorage.setItem('pending', JSON.stringify(a));
   } catch (_) {}
-  $('#f').reset();
-  dlg.close();
+  $('#f').reset(); dlg.close();
   toast('謝謝你！連結已送出，審核後才會出現在地圖上。');
 });
 
+// ---------- 讀檔 ----------
 function csv(t) {
   const r = [];
   let row = [], c = '', q = false;
   for (let i = 0; i < t.length; i++) {
     const ch = t[i];
     if (q) {
-      if (ch == '"') { if (t[i+1] == '"') { c += '"'; i++; } else q = false; }
+      if (ch == '"') { if (t[i + 1] == '"') { c += '"'; i++; } else q = false; }
       else c += ch;
     } else if (ch == '"') q = true;
     else if (ch == ',') { row.push(c); c = ''; }
@@ -377,68 +486,55 @@ function csv(t) {
   if (c || row.length) { row.push(c); r.push(row); }
   return r;
 }
-
-const zk = {};
-Object.entries(names).forEach(([k,v]) => zk[v] = k);
-
 function nd(v) {
   v = (v || '').trim();
-  if (/^\d{7}$/.test(v)) { const y = +v.slice(0,3) + 1911; return y + '-' + v.slice(3,5) + '-' + v.slice(5); }
-  if (/^\d{8}$/.test(v)) return v.slice(0,4) + '-' + v.slice(4,6) + '-' + v.slice(6);
+  if (/^\d{7}$/.test(v)) { const y = +v.slice(0, 3) + 1911; return y + '-' + v.slice(3, 5) + '-' + v.slice(5); }
+  if (/^\d{8}$/.test(v)) return v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6);
   const m = v.split(/[\/\-.]/);
   if (m.length == 3) {
     const y = m[0].length === 3 ? (+m[0] + 1911) : m[0];
-    if (/^\d{4}$/.test(String(y))) return y + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0');
+    if (/^\d{4}$/.test(String(y))) return y + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0');
   }
   return '';
 }
-
 async function getText(u) {
-  const res = await fetch(u, {cache:'no-cache'});
+  const res = await fetch(u, {cache: 'no-cache'});
   if (!res.ok) throw new Error(res.status);
   const b = await res.arrayBuffer();
   let t = new TextDecoder('utf-8').decode(b);
   if (t.includes('\uFFFD')) { try { t = new TextDecoder('big5').decode(b); } catch (e) {} }
   return t.replace(/^\uFEFF/, '');
 }
+const warn = msg => { const d = $('#demo'); d.style.display = 'block'; d.textContent = msg; };
+const kOf = name => { name = (name || '').trim().replace('臺', '台'); return zk[name] || EXTRA_KEYS[name]; };
 
-async function loadStats() {
-  if (!STAT_URL) return;
+async function loadOfficial() {
   try {
-    const rows = csv(await getText(STAT_URL));
-    if (rows.length === 1 && rows[0].length === 1) {
-      const n = parseInt(rows[0][0], 10);
-      if (!isNaN(n)) PEND = n;
-      return;
-    }
-    // 欄位順序：0縣市 1統計期間 2酒駕事故件數 3死亡人數 4受傷人數 5前一年度期間 6前一年度事故件數 7前一年度死亡人數 8前一年度受傷人數 9資料更新日期 10資料來源
-    const parsed = {};
-    const extraMap = {'總計':'Total', '國道':'Highway', '其他':'Other'};
-    rows.slice(1).forEach(r => {
-      const cname = (r[0] || '').trim().replace('臺', '台');
-      const k = zk[cname] || extraMap[cname];
+    csv(await getText(ACC_URL)).slice(1).forEach(r => {
+      const k = kOf(r[2]);
       if (!k) return;
-      parsed[k] = {
-        period: (r[1] || '').trim(),
-        cases: +r[2] || 0,
-        dead: +r[3] || 0,
-        inj: +r[4] || 0,
-        prevPeriod: (r[5] || '').trim(),
-        prevCases: r[6] !== undefined && r[6] !== '' ? +r[6] : null,
-        prevDead: r[7] !== undefined && r[7] !== '' ? +r[7] : null,
-        prevInj: r[8] !== undefined && r[8] !== '' ? +r[8] : null,
-        updated: (r[9] || '').trim(),
-        src: (r[10] || '').trim()
-      };
+      (ACC[k] = ACC[k] || []).push({y: +r[0], m: +r[1], a: +r[3] || 0, d: +r[4] || 0, i: +r[5] || 0});
     });
-    NPA_STAT = parsed;
-  } catch (e) {
-    console.warn('無法載入 official_stats.csv：', e);
-  }
+    Object.values(ACC).forEach(l => l.sort((a, b) => (a.y * 100 + a.m) - (b.y * 100 + b.m)));
+  } catch (e) { warn('無法讀取 ' + ACC_URL + '，請確認檔案已放在同一個資料夾，並透過 GitHub Pages 或網頁伺服器開啟。'); return; }
+  try {
+    csv(await getText(POP_URL)).slice(1).forEach(r => {
+      const k = kOf(r[2]);
+      if (k && +r[3]) (POP[k] = POP[k] || {})[(+r[0]) * 100 + (+r[1])] = +r[3];
+    });
+  } catch (e) { console.warn('無法讀取 ' + POP_URL, e); }
+  try {
+    csv(await getText(META_URL)).slice(1).forEach(r => { if (r[0]) META[r[0].trim()] = (r[1] || '').trim(); });
+  } catch (e) { console.warn('無法讀取 ' + META_URL, e); }
 }
-
+async function loadPending() {
+  if (!PENDING_URL) return;
+  try {
+    const n = parseInt(csv(await getText(PENDING_URL))[0][0], 10);
+    if (!isNaN(n)) PEND = n;
+  } catch (e) {}
+}
 async function loadIncidents() {
-  const d = $('#demo');
   if (!SHEET_URL) return;
   try {
     const rows = csv(await getText(SHEET_URL)).slice(1);
@@ -450,7 +546,7 @@ async function loadIncidents() {
       const key = g(0) || 'row' + n;
       let e = grp.get(key);
       if (!e) {
-        e = {id:key, c:zk[g(2).replace('臺','台')]||'', date:nd(g(1)), road:'', driver:'', victim:'', result:'', dead:0, inj:0, src:[]};
+        e = {id: key, c: zk[g(2).replace('臺', '台')] || '', date: nd(g(1)), road: '', driver: '', victim: '', result: '', dead: 0, inj: 0, src: []};
         grp.set(key, e);
       }
       if (!e.road) e.road = g(3);
@@ -461,26 +557,17 @@ async function loadIncidents() {
       if (!e.dead) e.dead = +g(7) || 0;
       if (!e.inj) e.inj = +g(8) || 0;
       const u = g(9);
-      if (/^https?:\/\//i.test(u)) {
-        e.src.push([/youtu|video|影音/i.test(u) ? 'video' : 'text', g(10), u]);
-      }
+      if (/^https?:\/\//i.test(u)) e.src.push([/youtu|video|影音/i.test(u) ? 'video' : 'text', g(10), u]);
     });
     const list = [...grp.values()].filter(e => e.c);
     list.forEach(e => { if (!e.dead && e.result.includes('死')) e.dead = 1; });
-    if (grp.size && !list.length) {
-      d.style.display = 'block';
-      d.textContent = '讀到 ' + grp.size + ' 件資料，但沒有任何一件的「發生縣市」對得上地圖，請確認寫成「基隆市」「台南市」這類全名。';
-    } else {
-      INC = list;
-      d.style.display = 'none';
-    }
-  } catch (e) {
-    d.style.display = 'block';
-    d.textContent = '無法讀取 incidents.csv，請確認檔案已放置於相同目錄並透過網頁伺服器（或 GitHub Pages）開啟。';
-  }
+    if (grp.size && !list.length) warn('讀到 ' + grp.size + ' 件新聞資料，但沒有任何一件的「發生縣市」對得上地圖，請確認寫成「基隆市」「台南市」這類全名。');
+    else INC = list;
+  } catch (e) { warn('無法讀取 ' + SHEET_URL + '，請確認檔案已放置於相同目錄並透過網頁伺服器（或 GitHub Pages）開啟。'); }
 }
 
-Promise.all([loadStats(), loadIncidents()]).then(() => { badges(); home(); });
+Promise.all([loadOfficial(), loadIncidents(), loadPending()]).then(() => { badges(); home(); });
+
 </script>
 </body>
 </html>
